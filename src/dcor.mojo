@@ -1,10 +1,9 @@
 """Distance-correlation kernels and their C ABI."""
 
-from std.algorithm import sync_parallelize
 from std.math import pow, sqrt
 from std.sys.info import simd_width_of
 
-comptime Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
+comptime Ptr = Pointer[Float64, MutUntrackedOrigin]
 comptime W = simd_width_of[DType.float64]()
 
 
@@ -13,22 +12,24 @@ def pointer(address: Int) -> Ptr:
 
 
 @always_inline
-def powered_euclidean(a: Ptr, b: Ptr, dimensions: Int, exponent: Float64) -> Float64:
+def powered_euclidean(
+    a: Ptr, b: Ptr, dimensions: Int, exponent: Float64
+) -> Float64:
     if dimensions == 1 and exponent == 1.0:
-        return abs(a[0] - b[0])
+        return abs(a[unsafe_offset=0] - b[unsafe_offset=0])
 
     var accum = SIMD[DType.float64, W](0.0)
     var component = 0
     while component + W <= dimensions:
-        var delta = (
-            a.load[width=W](component) - b.load[width=W](component)
+        var delta = a.unsafe_load[width=W](component) - b.unsafe_load[width=W](
+            component
         )
         accum += delta * delta
         component += W
 
     var squared = accum.reduce_add()
     while component < dimensions:
-        var delta = a[component] - b[component]
+        var delta = a[unsafe_offset=component] - b[unsafe_offset=component]
         squared += delta * delta
         component += 1
 
@@ -54,7 +55,7 @@ def mdcor_stats(
     var scratch = pointer(scratch_address)
     var result = pointer(result_address)
 
-    @parameter
+    @__parameter
     def compute_row(row: Int):
         var x_sum = 0.0
         var y_sum = 0.0
@@ -63,14 +64,14 @@ def mdcor_stats(
         var yy_sum = 0.0
         for other in range(samples):
             var x_distance = powered_euclidean(
-                x + row * x_dimensions,
-                x + other * x_dimensions,
+                x.unsafe_offset(row * x_dimensions),
+                x.unsafe_offset(other * x_dimensions),
                 x_dimensions,
                 exponent,
             )
             var y_distance = powered_euclidean(
-                y + row * y_dimensions,
-                y + other * y_dimensions,
+                y.unsafe_offset(row * y_dimensions),
+                y.unsafe_offset(other * y_dimensions),
                 y_dimensions,
                 exponent,
             )
@@ -79,17 +80,14 @@ def mdcor_stats(
             xy_sum += x_distance * y_distance
             xx_sum += x_distance * x_distance
             yy_sum += y_distance * y_distance
-        scratch[row] = x_sum
-        scratch[samples + row] = y_sum
-        scratch[2 * samples + row] = xy_sum
-        scratch[3 * samples + row] = xx_sum
-        scratch[4 * samples + row] = yy_sum
+        scratch[unsafe_offset=row] = x_sum
+        scratch[unsafe_offset=samples + row] = y_sum
+        scratch[unsafe_offset=2 * samples + row] = xy_sum
+        scratch[unsafe_offset=3 * samples + row] = xx_sum
+        scratch[unsafe_offset=4 * samples + row] = yy_sum
 
-    if samples >= 64:
-        sync_parallelize[compute_row](samples)
-    else:
-        for row in range(samples):
-            compute_row(row)
+    for row in range(samples):
+        compute_row(row)
 
     var x_total = 0.0
     var y_total = 0.0
@@ -98,14 +96,14 @@ def mdcor_stats(
     var xx_total = 0.0
     var yy_total = 0.0
     for row in range(samples):
-        var x_row = scratch[row]
-        var y_row = scratch[samples + row]
+        var x_row = scratch[unsafe_offset=row]
+        var y_row = scratch[unsafe_offset=samples + row]
         x_total += x_row
         y_total += y_row
         row_product += x_row * y_row
-        xy_total += scratch[2 * samples + row]
-        xx_total += scratch[3 * samples + row]
-        yy_total += scratch[4 * samples + row]
+        xy_total += scratch[unsafe_offset=2 * samples + row]
+        xx_total += scratch[unsafe_offset=3 * samples + row]
+        yy_total += scratch[unsafe_offset=4 * samples + row]
 
     var covariance: Float64
     var variance_x: Float64
@@ -123,9 +121,12 @@ def mdcor_stats(
         var x_row_squared = 0.0
         var y_row_squared = 0.0
         for row in range(samples):
-            x_row_squared += scratch[row] * scratch[row]
+            x_row_squared += (
+                scratch[unsafe_offset=row] * scratch[unsafe_offset=row]
+            )
             y_row_squared += (
-                scratch[samples + row] * scratch[samples + row]
+                scratch[unsafe_offset=samples + row]
+                * scratch[unsafe_offset=samples + row]
             )
         variance_x = (
             xx_total
@@ -149,9 +150,12 @@ def mdcor_stats(
         var x_row_squared = 0.0
         var y_row_squared = 0.0
         for row in range(samples):
-            x_row_squared += scratch[row] * scratch[row]
+            x_row_squared += (
+                scratch[unsafe_offset=row] * scratch[unsafe_offset=row]
+            )
             y_row_squared += (
-                scratch[samples + row] * scratch[samples + row]
+                scratch[unsafe_offset=samples + row]
+                * scratch[unsafe_offset=samples + row]
             )
         variance_x = (
             xx_total
@@ -164,11 +168,13 @@ def mdcor_stats(
             + y_total * y_total / normalization
         ) / normalization
 
-    result[0] = covariance
-    result[2] = variance_x
-    result[3] = variance_y
+    result[unsafe_offset=0] = covariance
+    result[unsafe_offset=2] = variance_x
+    result[unsafe_offset=3] = variance_y
     var denominator = sqrt(abs(variance_x * variance_y))
-    result[1] = covariance / denominator if denominator != 0.0 else 0.0
+    result[unsafe_offset=1] = (
+        covariance / denominator if denominator != 0.0 else 0.0
+    )
 
 
 @export("mdcor_pairwise_distances")
@@ -182,21 +188,20 @@ def mdcor_pairwise_distances(
     var x = pointer(x_address)
     var destination = pointer(destination_address)
 
-    @parameter
+    @__parameter
     def compute_row(row: Int):
         for column in range(samples):
-            destination[row * samples + column] = powered_euclidean(
-                x + row * dimensions,
-                x + column * dimensions,
+            destination[
+                unsafe_offset=row * samples + column
+            ] = powered_euclidean(
+                x.unsafe_offset(row * dimensions),
+                x.unsafe_offset(column * dimensions),
                 dimensions,
                 exponent,
             )
 
-    if samples >= 64:
-        sync_parallelize[compute_row](samples)
-    else:
-        for row in range(samples):
-            compute_row(row)
+    for row in range(samples):
+        compute_row(row)
 
 
 @export("mdcor_center")
@@ -213,70 +218,70 @@ def mdcor_center(
         var column = 0
         var row_offset = row * dimension
         while column + W <= dimension:
-            accum += matrix.load[width=W](row_offset + column)
+            accum += matrix.unsafe_load[width=W](row_offset + column)
             column += W
         var row_sum = accum.reduce_add()
         while column < dimension:
-            row_sum += matrix[row_offset + column]
+            row_sum += matrix[unsafe_offset=row_offset + column]
             column += 1
-        sums[row] = row_sum
+        sums[unsafe_offset=row] = row_sum
 
     var total_accum = SIMD[DType.float64, W](0.0)
     var row = 0
     while row + W <= dimension:
-        total_accum += sums.load[width=W](row)
+        total_accum += sums.unsafe_load[width=W](row)
         row += W
     var total = total_accum.reduce_add()
     while row < dimension:
-        total += sums[row]
+        total += sums[unsafe_offset=row]
         row += 1
 
-    @parameter
+    @__parameter
     def center_row(row: Int):
         var row_offset = row * dimension
         var column = 0
         if unbiased != 0:
             var axis_denominator = Float64(dimension - 2)
             var total_denominator = Float64((dimension - 1) * (dimension - 2))
-            var row_adjustment = sums[row] / axis_denominator
+            var row_adjustment = sums[unsafe_offset=row] / axis_denominator
             var total_adjustment = total / total_denominator
             while column + W <= dimension:
-                matrix.store(
+                matrix.unsafe_store(
                     row_offset + column,
-                    matrix.load[width=W](row_offset + column)
+                    matrix.unsafe_load[width=W](row_offset + column)
                     - row_adjustment
-                    - sums.load[width=W](column) / axis_denominator
+                    - sums.unsafe_load[width=W](column) / axis_denominator
                     + total_adjustment,
                 )
                 column += W
             while column < dimension:
-                matrix[row_offset + column] = (
-                    matrix[row_offset + column]
+                matrix[unsafe_offset=row_offset + column] = (
+                    matrix[unsafe_offset=row_offset + column]
                     - row_adjustment
-                    - sums[column] / axis_denominator
+                    - sums[unsafe_offset=column] / axis_denominator
                     + total_adjustment
                 )
                 column += 1
-            matrix[row_offset + row] = 0.0
+            matrix[unsafe_offset=row_offset + row] = 0.0
         else:
             var axis_denominator = Float64(dimension)
             var total_denominator = axis_denominator * axis_denominator
-            var row_adjustment = sums[row] / axis_denominator
+            var row_adjustment = sums[unsafe_offset=row] / axis_denominator
             var total_adjustment = total / total_denominator
             while column + W <= dimension:
-                matrix.store(
+                matrix.unsafe_store(
                     row_offset + column,
-                    matrix.load[width=W](row_offset + column)
+                    matrix.unsafe_load[width=W](row_offset + column)
                     - row_adjustment
-                    - sums.load[width=W](column) / axis_denominator
+                    - sums.unsafe_load[width=W](column) / axis_denominator
                     + total_adjustment,
                 )
                 column += W
             while column < dimension:
-                matrix[row_offset + column] = (
-                    matrix[row_offset + column]
+                matrix[unsafe_offset=row_offset + column] = (
+                    matrix[unsafe_offset=row_offset + column]
                     - row_adjustment
-                    - sums[column] / axis_denominator
+                    - sums[unsafe_offset=column] / axis_denominator
                     + total_adjustment
                 )
                 column += 1
@@ -290,11 +295,11 @@ def dot_range(a: Ptr, b: Ptr, begin: Int, end: Int) -> Float64:
     var accum = SIMD[DType.float64, W](0.0)
     var index = begin
     while index + W <= end:
-        accum += a.load[width=W](index) * b.load[width=W](index)
+        accum += a.unsafe_load[width=W](index) * b.unsafe_load[width=W](index)
         index += W
     var total = accum.reduce_add()
     while index < end:
-        total += a[index] * b[index]
+        total += a[unsafe_offset=index] * b[unsafe_offset=index]
         index += 1
     return total
 
