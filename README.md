@@ -74,18 +74,25 @@ here.
 
 | case | mojo-dcor | dcor 0.7 | result |
 | --- | ---: | ---: | ---: |
-| `distance_correlation` (1k x 5/3) | 16.80 ms | 250.32 ms | 14.90x faster |
-| `u_distance_covariance_sqr` (1.5k x 2) | 30.41 ms | 365.21 ms | 12.01x faster |
-| `double_centered` (1.5k x 1.5k) | 8.04 ms | 12.67 ms | 1.58x faster |
-| `mean_product` (2k x 2k) | 6.59 ms | 15.56 ms | 2.36x faster |
+| `distance_correlation` (1k x 5/3) | 8.91 ms | 187.13 ms | 21.00x faster |
+| `u_distance_covariance_sqr` (1.5k x 2) | 32.02 ms | 1053.83 ms | 32.91x faster |
+| `double_centered` (1.5k x 1.5k) | 5.86 ms | 9.22 ms | 1.57x faster |
+| `mean_product` (2k x 2k) | 7.37 ms | 17.25 ms | 2.34x faster |
 
-Centering uses target-width SIMD for both row reductions and matrix updates,
-with scalar remainder loops. It stays serial because this streaming workload
-was slower after thread launch and scheduling at the benchmark size. The
-estimator kernels avoid materializing two distance matrices and retain
-thresholded parallel execution over independent rows.
+Centering uses target-width SIMD for row reductions, scratch normalization, and
+matrix updates, with scalar remainder loops. The input copy is fused into the
+row-reduction pass, so a contiguous float64 NumPy input stays zero-copy across
+the FFI boundary and the kernel avoids a separate full-matrix copy. A measured
+parallel experiment was slower at both 1,500 squared and 3,000 squared because
+this streaming kernel saturates memory bandwidth and pays two scheduling
+barriers, so the production path stays serial. The estimator kernels avoid
+materializing two distance matrices.
 
-No GPU path is included.
+No GPU path is included: centering performs only a few arithmetic operations
+per 16-24 bytes moved, far below the roughly 2-flop-per-byte threshold where a
+device transfer can pay off. The high-compute distance kernels are already far
+more than 5x ahead of upstream on the benchmark and were deliberately left
+unchanged.
 
 These are measured values, not projections; rerun the benchmark for the numbers
 on another machine.

@@ -170,9 +170,11 @@ def test_double_centered_matches_upstream_and_has_zero_sums():
 def test_centering_simd_tail_matches_upstream(function_name):
     matrix = rng.normal(size=(17, 17))
     matrix += matrix.T
+    original = matrix.copy()
     got = getattr(mdcor, function_name)(matrix)
     expected = getattr(dcor, function_name)(matrix)
     assert got == pytest.approx(expected, rel=2e-13, abs=2e-13)
+    assert matrix == pytest.approx(original, rel=0, abs=0)
 
 
 def test_centering_out_returns_and_updates_same_array():

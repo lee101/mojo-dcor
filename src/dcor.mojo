@@ -206,25 +206,36 @@ def mdcor_pairwise_distances(
 
 @export("mdcor_center")
 def mdcor_center(
+    source_address: Int,
     matrix_address: Int,
     sums_address: Int,
     dimension: Int,
     unbiased: Int,
 ) abi("C"):
+    var source = pointer(source_address)
     var matrix = pointer(matrix_address)
     var sums = pointer(sums_address)
-    for row in range(dimension):
+
+    @__parameter
+    def copy_and_sum_row(row: Int):
         var accum = SIMD[DType.float64, W](0.0)
         var column = 0
         var row_offset = row * dimension
         while column + W <= dimension:
-            accum += matrix.unsafe_load[width=W](row_offset + column)
+            var values = source.unsafe_load[width=W](row_offset + column)
+            matrix.unsafe_store(row_offset + column, values)
+            accum += values
             column += W
         var row_sum = accum.reduce_add()
         while column < dimension:
-            row_sum += matrix[unsafe_offset=row_offset + column]
+            var value = source[unsafe_offset=row_offset + column]
+            matrix[unsafe_offset=row_offset + column] = value
+            row_sum += value
             column += 1
         sums[unsafe_offset=row] = row_sum
+
+    for row in range(dimension):
+        copy_and_sum_row(row)
 
     var total_accum = SIMD[DType.float64, W](0.0)
     var row = 0
@@ -236,55 +247,50 @@ def mdcor_center(
         total += sums[unsafe_offset=row]
         row += 1
 
+    var axis_denominator = Float64(
+        dimension - 2 if unbiased != 0 else dimension
+    )
+    var total_denominator = (
+        Float64((dimension - 1) * (dimension - 2))
+        if unbiased != 0
+        else axis_denominator * axis_denominator
+    )
+    var reciprocal = 1.0 / axis_denominator
+    var total_adjustment = total / total_denominator
+    row = 0
+    while row + W <= dimension:
+        sums.unsafe_store(
+            row, sums.unsafe_load[width=W](row) * reciprocal
+        )
+        row += W
+    while row < dimension:
+        sums[unsafe_offset=row] *= reciprocal
+        row += 1
+
     @__parameter
     def center_row(row: Int):
         var row_offset = row * dimension
         var column = 0
+        var row_adjustment = sums[unsafe_offset=row]
+        while column + W <= dimension:
+            matrix.unsafe_store(
+                row_offset + column,
+                matrix.unsafe_load[width=W](row_offset + column)
+                - row_adjustment
+                - sums.unsafe_load[width=W](column)
+                + total_adjustment,
+            )
+            column += W
+        while column < dimension:
+            matrix[unsafe_offset=row_offset + column] = (
+                matrix[unsafe_offset=row_offset + column]
+                - row_adjustment
+                - sums[unsafe_offset=column]
+                + total_adjustment
+            )
+            column += 1
         if unbiased != 0:
-            var axis_denominator = Float64(dimension - 2)
-            var total_denominator = Float64((dimension - 1) * (dimension - 2))
-            var row_adjustment = sums[unsafe_offset=row] / axis_denominator
-            var total_adjustment = total / total_denominator
-            while column + W <= dimension:
-                matrix.unsafe_store(
-                    row_offset + column,
-                    matrix.unsafe_load[width=W](row_offset + column)
-                    - row_adjustment
-                    - sums.unsafe_load[width=W](column) / axis_denominator
-                    + total_adjustment,
-                )
-                column += W
-            while column < dimension:
-                matrix[unsafe_offset=row_offset + column] = (
-                    matrix[unsafe_offset=row_offset + column]
-                    - row_adjustment
-                    - sums[unsafe_offset=column] / axis_denominator
-                    + total_adjustment
-                )
-                column += 1
             matrix[unsafe_offset=row_offset + row] = 0.0
-        else:
-            var axis_denominator = Float64(dimension)
-            var total_denominator = axis_denominator * axis_denominator
-            var row_adjustment = sums[unsafe_offset=row] / axis_denominator
-            var total_adjustment = total / total_denominator
-            while column + W <= dimension:
-                matrix.unsafe_store(
-                    row_offset + column,
-                    matrix.unsafe_load[width=W](row_offset + column)
-                    - row_adjustment
-                    - sums.unsafe_load[width=W](column) / axis_denominator
-                    + total_adjustment,
-                )
-                column += W
-            while column < dimension:
-                matrix[unsafe_offset=row_offset + column] = (
-                    matrix[unsafe_offset=row_offset + column]
-                    - row_adjustment
-                    - sums[unsafe_offset=column] / axis_denominator
-                    + total_adjustment
-                )
-                column += 1
 
     for row in range(dimension):
         center_row(row)

@@ -295,15 +295,14 @@ def _centered(
 
     if direct_out:
         work = out
-        if not same_buffer:
-            np.copyto(work, source, casting="unsafe")
     else:
-        work = np.array(source, dtype=np.float64, order="C", copy=True)
+        work = np.empty(source.shape, dtype=np.float64, order="C")
 
     dimension = work.shape[0]
     if dimension:
         sums = np.empty(dimension, dtype=np.float64)
         lib().mdcor_center(
+            address(source),
             address(work, writable=True),
             address(sums, writable=True),
             dimension,

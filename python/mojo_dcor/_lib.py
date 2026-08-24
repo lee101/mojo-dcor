@@ -19,7 +19,7 @@ F = ctypes.c_double
 _SIGNATURES = {
     "mdcor_stats": ([I, I, I, I, I, I, I, F, I], None),
     "mdcor_pairwise_distances": ([I, I, I, I, F], None),
-    "mdcor_center": ([I, I, I, I], None),
+    "mdcor_center": ([I, I, I, I, I], None),
     "mdcor_mean_product": ([I, I, I], F),
     "mdcor_u_product": ([I, I, I], F),
 }
